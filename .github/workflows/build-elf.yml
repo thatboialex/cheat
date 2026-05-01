@@ -7,6 +7,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+env:
+  PS5_PAYLOAD_SDK: ${{ github.workspace }}/external/ps5-payload-sdk
+
 jobs:
   build-elf:
     runs-on: ubuntu-latest
@@ -25,111 +28,118 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build clang llvm file build-essential git ca-certificates
+            cmake ninja-build \
+            clang-18 lld-18 llvm-18 llvm-18-dev \
+            libc++-18-dev libc++abi-18-dev libunwind-18-dev \
+            file build-essential git ca-certificates wget rsync python3
+          sudo update-alternatives --install /usr/bin/clang        clang        /usr/bin/clang-18        100 || true
+          sudo update-alternatives --install /usr/bin/clang++      clang++      /usr/bin/clang++-18      100 || true
+          sudo update-alternatives --install /usr/bin/llvm-config  llvm-config  /usr/bin/llvm-config-18  100 || true
+          sudo update-alternatives --install /usr/bin/lld          lld          /usr/bin/lld-18          100 || true
+          clang --version
+          llvm-config --version
 
       - name: Clone PS5 payload SDK
         run: |
           set -euo pipefail
-          SDK_DIR="$GITHUB_WORKSPACE/external/ps5-payload-sdk"
+          SDK_DIR="${PS5_PAYLOAD_SDK}"
           rm -rf "$SDK_DIR"
           mkdir -p "$(dirname "$SDK_DIR")"
-          git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk "$SDK_DIR"
-          echo "PS5_PAYLOAD_SDK=$SDK_DIR" >> "$GITHUB_ENV"
+          git clone --depth 1 --recurse-submodules \
+            https://github.com/ps5-payload-dev/sdk "$SDK_DIR"
+          git -C "$SDK_DIR" submodule update --init --recursive || true
 
-      - name: Diagnose build and SDK layout
+      - name: Cache PS5 SDK target tree (libcxx is expensive to rebuild)
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PS5_PAYLOAD_SDK }}/target
+            ${{ env.PS5_PAYLOAD_SDK }}/bin
+            ${{ env.PS5_PAYLOAD_SDK }}/ldscripts
+            ${{ env.PS5_PAYLOAD_SDK }}/toolchain
+          key: ps5-payload-sdk-${{ runner.os }}-${{ hashFiles('external/ps5-payload-sdk/**/Makefile', 'external/ps5-payload-sdk/libcxx.sh') }}
+
+      - name: Build and install PS5 SDK target tree
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          REPO_ROOT="$GITHUB_WORKSPACE"
-          SOURCE_DIR="$REPO_ROOT/ci-src"
-          BUILD_DIR="$REPO_ROOT/build/ps5-release"
-          SDK_DIR="$PS5_PAYLOAD_SDK"
+          SDK_DIR="${PS5_PAYLOAD_SDK}"
+          # Install the SDK in-place (DESTDIR=${SDK_DIR}). The final 'install'
+          # rule in the top Makefile copies samples to DESTDIR/samples; when
+          # DESTDIR is the SDK source tree itself this no-ops to a same-file
+          # cp error - we tolerate it because every prior subdir already
+          # produced its outputs in $SDK_DIR/{target,bin,ldscripts,toolchain}.
+          make -C "$SDK_DIR" DESTDIR="$SDK_DIR" install || true
+          test -f "$SDK_DIR/target/include/string.h"
+          test -f "$SDK_DIR/target/include/stdlib.h"
+          test -f "$SDK_DIR/target/include/elf.h"
+          test -f "$SDK_DIR/target/lib/crt1.o"
 
-          rm -rf "$SOURCE_DIR"
-          rsync -a --delete "$REPO_ROOT/Source Code/" "$SOURCE_DIR/"
+      - name: Build and install libcxx for PS5
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          export PS5_PAYLOAD_SDK="${PS5_PAYLOAD_SDK}"
+          # libcxx.sh downloads the official llvm-project source tarball,
+          # builds libcxx + libcxxabi + libunwind for x86_64-sie-ps5 and
+          # installs the C++ runtime headers/archives into target/.
+          "$PS5_PAYLOAD_SDK/libcxx.sh"
+          test -f "$PS5_PAYLOAD_SDK/target/include/c++/v1/cstdint"
+          test -f "$PS5_PAYLOAD_SDK/target/lib/libc++.a"
 
-          echo "pwd=$(pwd)"
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          echo "REPO_ROOT=$REPO_ROOT"
-          echo "SOURCE_DIR=$SOURCE_DIR"
-          echo "BUILD_DIR=$BUILD_DIR"
+      - name: Verify SDK headers and libs
+        run: |
+          set -euo pipefail
           echo "PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK"
-          echo "TOOLCHAIN_FILE=$SOURCE_DIR/stubber/toolchain.cmake"
+          for h in string.h stdlib.h elf.h; do
+            f="$PS5_PAYLOAD_SDK/target/include/$h"
+            if [ ! -f "$f" ]; then
+              echo "ERROR: missing required header $f" >&2
+              find "$PS5_PAYLOAD_SDK" -maxdepth 4 -type d | sort >&2
+              exit 1
+            fi
+            echo "ok: $f"
+          done
+          ls "$PS5_PAYLOAD_SDK/target/lib" | head
+          ls "$PS5_PAYLOAD_SDK/target/include/c++/v1" | head -5 || true
 
-          test -d "$SOURCE_DIR"
-          test -d "$SDK_DIR"
+      - name: Stage no-space source copy
+        run: |
+          set -euo pipefail
+          SOURCE_DIR="$GITHUB_WORKSPACE/ci-src"
+          rm -rf "$SOURCE_DIR"
+          rsync -a --delete "$GITHUB_WORKSPACE/Source Code/" "$SOURCE_DIR/"
           test -f "$SOURCE_DIR/CMakeLists.txt"
           test -f "$SOURCE_DIR/linker.x"
           test -f "$SOURCE_DIR/stubber/toolchain.cmake"
-          find "$PS5_PAYLOAD_SDK" -maxdepth 3 -type d | sort | head -100
 
-          echo "=== Repo build-related files ==="
-          find "$REPO_ROOT" -maxdepth 4 -type f | sort | sed "s#^$REPO_ROOT/##" | grep -E '(^|/)(CMakeLists.txt|CMakePresets.json|Makefile|.*\.cmake|.*\.sh|linker\.x|\.github/workflows/.*\.yml)$' || true
-
-          echo "=== SDK root listing (maxdepth 3, first 200 files) ==="
-          find "$SDK_DIR" -maxdepth 3 -type f | sort | head -200
-
-          echo "=== SDK build-helper files ==="
-          find "$SDK_DIR" -maxdepth 6 -type f \( -name "*toolchain*.cmake" -o -name "*.cmake" -o -name "Makefile" -o -name "*.sh" \) -print | sort
-
-      - name: Configure and build ELF
+      - name: Configure (CMake / Ninja)
         run: |
           set -euo pipefail
-          REPO_ROOT="$GITHUB_WORKSPACE"
-          SOURCE_DIR="$REPO_ROOT/ci-src"
-          BUILD_DIR="$REPO_ROOT/build/ps5-release"
-          SDK_DIR="$PS5_PAYLOAD_SDK"
+          # The SDK's prospero-* host wrappers (prospero-lld, prospero-llvm-config)
+          # must be on PATH because clang resolves the linker for the
+          # `x86_64-sie-ps5` target by exec'ing `prospero-lld`.
+          echo "${PS5_PAYLOAD_SDK}/bin" >> "$GITHUB_PATH"
+          export PATH="${PS5_PAYLOAD_SDK}/bin:$PATH"
 
-          rm -rf "$SOURCE_DIR"
-          rsync -a --delete "$REPO_ROOT/Source Code/" "$SOURCE_DIR/"
+          SOURCE_DIR="$GITHUB_WORKSPACE/ci-src"
+          BUILD_DIR="$GITHUB_WORKSPACE/build/ps5-release"
+          TOOLCHAIN_FILE="$SOURCE_DIR/stubber/toolchain.cmake"
+          rm -rf "$BUILD_DIR"
 
-          test -d "$SOURCE_DIR" || { echo "Missing source dir: $SOURCE_DIR" >&2; exit 1; }
-          test -d "$SDK_DIR" || { echo "Missing SDK dir: $SDK_DIR" >&2; exit 1; }
+          cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DPS5_PAYLOAD_SDK="$PS5_PAYLOAD_SDK"
 
-          REPO_TOOLCHAIN="$SOURCE_DIR/stubber/toolchain.cmake"
-          SDK_TOOLCHAIN=""
-          if [ -d "$SDK_DIR" ]; then
-            SDK_TOOLCHAIN="$(find "$SDK_DIR" -maxdepth 8 -type f -name 'toolchain-ps5.cmake' | head -n1 || true)"
-          fi
-
-          CONFIGURE_CMD=""
-          if [ -n "$SDK_TOOLCHAIN" ] && [ -f "$SDK_TOOLCHAIN" ]; then
-            echo "Using SDK toolchain file: $SDK_TOOLCHAIN"
-            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$SDK_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DPS5_PAYLOAD_SDK=\"$SDK_DIR\""
-          elif [ -x "$SDK_DIR/bin/prospero-cmake" ]; then
-            echo "Using SDK wrapper: $SDK_DIR/bin/prospero-cmake"
-            CONFIGURE_CMD="\"$SDK_DIR/bin/prospero-cmake\" -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DPS5_PAYLOAD_SDK=\"$SDK_DIR\""
-          elif [ -f "$REPO_TOOLCHAIN" ]; then
-            echo "Using repository toolchain file: $REPO_TOOLCHAIN"
-            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$REPO_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DPS5_PAYLOAD_SDK=\"$SDK_DIR\""
-          else
-            echo "ERROR: no valid PS5 configure path found." >&2
-            echo "pwd=$(pwd)" >&2
-            echo "PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK" >&2
-            echo "Repo cmake files:" >&2
-            find "$REPO_ROOT" -maxdepth 5 -type f \( -name "*.cmake" -o -name "CMakeLists.txt" -o -name "CMakePresets.json" -o -name "*.sh" \) | sort >&2
-            echo "SDK helper files:" >&2
-            find "$SDK_DIR" -maxdepth 8 -type f \( -name "*toolchain*.cmake" -o -name "*.cmake" -o -name "Makefile" -o -name "*.sh" \) | sort >&2
-            exit 1
-          fi
-
-          pwd
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          echo "PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK"
-          echo "SOURCE_DIR=$SOURCE_DIR"
-          echo "BUILD_DIR=$BUILD_DIR"
-          echo "TOOLCHAIN_FILE=$REPO_TOOLCHAIN"
-          test -d "$PS5_PAYLOAD_SDK"
-          test -d "$SOURCE_DIR"
-          test -f "$SOURCE_DIR/CMakeLists.txt"
-          test -f "$SOURCE_DIR/linker.x"
-          test -f "$REPO_TOOLCHAIN"
-
-          echo "CMake target/dependency references:"
-          rg -n "NidResolver|add_subdirectory|add_dependencies|add_library|add_executable|target_link_libraries" "$SOURCE_DIR" || true
-
-          echo "Configure command: $CONFIGURE_CMD"
-          eval "$CONFIGURE_CMD"
-          cmake --build "$BUILD_DIR" --target help | sed -n "1,200p" || true
+      - name: Build daemon ELF
+        run: |
+          set -euo pipefail
+          export PATH="${PS5_PAYLOAD_SDK}/bin:$PATH"
+          BUILD_DIR="$GITHUB_WORKSPACE/build/ps5-release"
           cmake --build "$BUILD_DIR" --target daemon --config Release --verbose
 
       - name: Verify ELF outputs
