@@ -67,6 +67,7 @@ From a fresh clone:
    ```bash
    mkdir -p external
    git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk external/ps5-payload-sdk
+   git -C external/ps5-payload-sdk submodule update --init --recursive
    export PS5_PAYLOAD_SDK="$PWD/external/ps5-payload-sdk"
       ```
 

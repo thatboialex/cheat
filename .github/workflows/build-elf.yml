@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build clang llvm file build-essential git ca-certificates
+            cmake ninja-build clang llvm file build-essential git ca-certificates rsync
 
       - name: Clone PS5 payload SDK
         run: |
@@ -34,6 +34,7 @@ jobs:
           rm -rf "$SDK_DIR"
           mkdir -p "$(dirname "$SDK_DIR")"
           git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk "$SDK_DIR"
+          git -C "$SDK_DIR" submodule update --init --recursive
           echo "PS5_PAYLOAD_SDK=$SDK_DIR" >> "$GITHUB_ENV"
 
       - name: Diagnose build and SDK layout
@@ -62,6 +63,10 @@ jobs:
           test -f "$SOURCE_DIR/stubber/toolchain.cmake"
           find "$PS5_PAYLOAD_SDK" -maxdepth 3 -type d | sort | head -100
 
+          echo "=== SDK headers sanity ==="
+          find "$PS5_PAYLOAD_SDK" -maxdepth 8 -type f \( -name "string.h" -o -name "stdlib.h" -o -name "elf.h" \) -print | sort
+          find "$PS5_PAYLOAD_SDK" -maxdepth 5 -type d \( -name include -o -name sysroot -o -name usr \) -print | sort
+
           echo "=== Repo build-related files ==="
           find "$REPO_ROOT" -maxdepth 4 -type f | sort | sed "s#^$REPO_ROOT/##" | grep -E '(^|/)(CMakeLists.txt|CMakePresets.json|Makefile|.*\.cmake|.*\.sh|linker\.x|\.github/workflows/.*\.yml)$' || true
 
@@ -84,6 +89,14 @@ jobs:
 
           test -d "$SOURCE_DIR" || { echo "Missing source dir: $SOURCE_DIR" >&2; exit 1; }
           test -d "$SDK_DIR" || { echo "Missing SDK dir: $SDK_DIR" >&2; exit 1; }
+
+          git -C "$SDK_DIR" submodule update --init --recursive
+
+          if ! find "$SDK_DIR" -maxdepth 8 -type f -name string.h | grep -q .; then
+            echo "Could not find string.h in PS5 payload SDK after setup." >&2
+            find "$SDK_DIR" -maxdepth 4 -type d | sort >&2
+            exit 1
+          fi
 
           REPO_TOOLCHAIN="$SOURCE_DIR/stubber/toolchain.cmake"
           SDK_TOOLCHAIN=""
@@ -125,7 +138,7 @@ jobs:
           test -f "$REPO_TOOLCHAIN"
 
           echo "CMake target/dependency references:"
-          rg -n "NidResolver|add_subdirectory|add_dependencies|add_library|add_executable|target_link_libraries" "$SOURCE_DIR" || true
+          grep -R -n "NidResolver\|add_subdirectory\|add_dependencies\|add_library\|add_executable\|target_link_libraries" "$SOURCE_DIR" || true
 
           echo "Configure command: $CONFIGURE_CMD"
           eval "$CONFIGURE_CMD"
