@@ -144,3 +144,56 @@ This repository does **not** provide exploit or jailbreak instructions. Use only
 ## License / credits
 - License is preserved in `LICENSE`.
 - Original etaHEN and upstream community contributions remain attributed in project history.
+
+## GitHub Actions CI (ELF build)
+The repository includes a CI workflow at `.github/workflows/build-elf.yml` that builds the cheat-toolbox payload ELF on GitHub Actions.
+
+### Triggers
+- Push to `main` or `master`
+- Pull requests targeting `main` or `master`
+- Manual run via `workflow_dispatch`
+
+### What the workflow does
+1. Checks out the repo (with submodules).
+2. Installs minimal Linux build dependencies (`cmake`, `ninja-build`, `clang`, `llvm`, `file`, `build-essential`).
+3. Validates required SDK variables and toolchain file.
+4. Configures CMake with Ninja using the PS5 toolchain file.
+5. Runs clean + build.
+6. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
+7. Uploads ELF artifacts as `cheat-toolbox-elf`.
+
+### Required repository variables
+Set these as repository variables (Settings → Secrets and variables → Actions → Variables):
+- `PS5SDK`: SDK root path available on the runner, must contain `cmake/toolchain-ps5.cmake`.
+- `PS5_PAYLOAD_SDK`: payload SDK root used by project includes/libraries.
+
+If either variable is missing or invalid, CI fails with a clear error before build starts.
+
+### Artifact output
+- Uploaded artifact name: `cheat-toolbox-elf`
+- Expected path in build workspace: `Source Code/bin/*.elf`
+- Primary expected file: `Source Code/bin/daemon.elf`
+
+### Reproduce CI locally (Linux)
+From repository root:
+```bash
+cd "Source Code"
+export PS5SDK=/path/to/ps5sdk
+export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+cmake -S . -B build/ci -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$PS5SDK/cmake/toolchain-ps5.cmake" \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++
+cmake --build build/ci --target clean
+cmake --build build/ci --verbose
+ls -lh bin
+file bin/*.elf
+sha256sum bin/*.elf
+```
+
+### Troubleshooting
+- **Missing SDK**: ensure `PS5SDK` points to a valid SDK root with `cmake/toolchain-ps5.cmake`.
+- **Missing compiler**: ensure `clang` and `clang++` are installed and on `PATH`.
+- **Wrong SDK variable path**: verify both `PS5SDK` and `PS5_PAYLOAD_SDK` are set correctly.
+- **ELF not found**: check build logs for link failures and verify output under `Source Code/bin/`.
+- **Permission denied on scripts**: if custom scripts are introduced later, ensure executable permissions are committed (`chmod +x`).
