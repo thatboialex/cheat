@@ -97,13 +97,31 @@ set(LINKER_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../linker.x")
 # Note: clang's `x86_64-sie-ps5` target rejects `-fuse-ld=lld`; lld is already
 # the default linker driven by the SDK's prospero-lld wrapper / clang for this
 # target, so we omit -fuse-ld here.
-set(CMAKE_EXE_LINKER_FLAGS "-fPIC -nodefaultlibs -L${_PS5_TARGET_LIB}")
-add_link_options("LINKER:-T,${LINKER_SCRIPT}")
+
+# Linker behaviour differs by output role:
+# - shellui.elf is the etaHEN-style PT_DYN payload that libNineS injects into
+#   the SceShellUI process. It needs --shared + the in-tree linker.x.
+# - daemon.elf is a real PS5 payload that ps5-payload-elfldr style loaders
+#   load via e_entry, so it must NOT use --shared and must keep `crt1.o` plus
+#   the standard PS5 runtime libs that prospero-clang auto-injects.
+#
+# `add_link_options` is global, so we gate the etaHEN-only flags on the target
+# name with a generator expression. The shellui target opts in; everything
+# else (daemon) gets a clean executable link.
+set(_PS5_ETAHEN_TARGETS shellui)
+set(_PS5_IS_ETAHEN "$<IN_LIST:$<TARGET_PROPERTY:NAME>,${_PS5_ETAHEN_TARGETS}>")
+
+set(CMAKE_EXE_LINKER_FLAGS "-fPIC -L${_PS5_TARGET_LIB}")
 set(CMAKE_SHARED_LINKER_FLAGS "-nostdlib -L${_PS5_TARGET_LIB}")
-# NOTE: pass `--shared` (long form) so the SDK's prospero-lld wrapper,
-# which only recognises the long form when deciding to drop its default `-pie`,
-# does not produce a `-shared`+`-pie` conflict.
-add_link_options("LINKER:SHELL:--shared --build-id=none -zmax-page-size=16384 -zcommon-page-size=16384 --hash-style=sysv")
+
+add_link_options(
+    "$<${_PS5_IS_ETAHEN}:-nodefaultlibs>"
+    "$<${_PS5_IS_ETAHEN}:LINKER:-T,${LINKER_SCRIPT}>"
+    # Pass `--shared` (long form) so the SDK's prospero-lld wrapper, which only
+    # recognises the long form when deciding to drop its default `-pie`, does
+    # not produce a `-shared`+`-pie` conflict.
+    "$<${_PS5_IS_ETAHEN}:LINKER:SHELL:--shared --build-id=none -zmax-page-size=16384 -zcommon-page-size=16384 --hash-style=sysv>"
+)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 set(CMAKE_C_LINKER_WRAPPER_FLAG "-Xlinker" " ")

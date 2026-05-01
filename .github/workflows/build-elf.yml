@@ -142,37 +142,86 @@ jobs:
           BUILD_DIR="$GITHUB_WORKSPACE/build/ps5-release"
           cmake --build "$BUILD_DIR" --target daemon --config Release --verbose
 
-      - name: Verify ELF outputs
+      - name: Stage and validate cheat-toolbox.elf artifact
         run: |
           set -euo pipefail
+          export PATH="${PS5_PAYLOAD_SDK}/bin:$PATH"
+
           REPO_ROOT="$GITHUB_WORKSPACE"
           SOURCE_DIR="$REPO_ROOT/ci-src"
           BUILD_DIR="$REPO_ROOT/build/ps5-release"
+          ARTIFACT_DIR="$REPO_ROOT/artifacts"
 
-          mapfile -t elfs < <(find "$BUILD_DIR" "$SOURCE_DIR" -type f \( -name "*.elf" -o -name "*.ELF" \) | sort)
-          if [ ${#elfs[@]} -eq 0 ]; then
-            echo "No ELF files found after successful build." >&2
-            echo "Searched: $BUILD_DIR and $SOURCE_DIR" >&2
+          # daemon.elf is the user-facing PS5 payload. It boots through `_start`
+          # (provided by the SDK's crt1.o), opens the cheat toolbox IPC servers,
+          # and injects the embedded shellui.elf into SceShellUI via libNineS.
+          # shellui.elf is NOT a standalone payload (it has no _start) -- it is
+          # consumed only by daemon.elf via .incbin, so we ship daemon.elf alone.
+          FINAL_ELF="$SOURCE_DIR/bin/daemon.elf"
+
+          if [ ! -f "$FINAL_ELF" ]; then
+            echo "ERROR: expected final ELF not produced: $FINAL_ELF" >&2
+            echo "All ELF files under build/ and ci-src/:" >&2
+            find "$BUILD_DIR" "$SOURCE_DIR" -type f \( -name "*.elf" -o -name "*.ELF" \) \
+              -print -exec ls -lh {} \; -exec file {} \; >&2 || true
             exit 1
           fi
 
-          for elf in "${elfs[@]}"; do
-            ls -lh "$elf"
-            file "$elf" || true
-            sha256sum "$elf"
-          done
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+          cp "$FINAL_ELF" "$ARTIFACT_DIR/cheat-toolbox.elf"
 
-          printf '%s\n' "${elfs[@]}" > "$REPO_ROOT/elf-artifacts.txt"
+          ls -lh "$ARTIFACT_DIR/cheat-toolbox.elf"
+          file "$ARTIFACT_DIR/cheat-toolbox.elf" \
+            | tee "$ARTIFACT_DIR/cheat-toolbox.elf.file.txt"
+          sha256sum "$ARTIFACT_DIR/cheat-toolbox.elf" \
+            | tee "$ARTIFACT_DIR/cheat-toolbox.elf.sha256"
 
-      - name: Upload ELF artifacts
+          if command -v llvm-readelf >/dev/null 2>&1; then
+            READELF=llvm-readelf
+          else
+            READELF=readelf
+          fi
+          "$READELF" -h "$ARTIFACT_DIR/cheat-toolbox.elf" \
+            | tee "$ARTIFACT_DIR/cheat-toolbox.elf.readelf.txt"
+
+          # Hard validation: bail if the ELF is missing, suspiciously small,
+          # not actually an ELF, or has an unset entry point (the previous
+          # broken artifact had e_entry=0 because crt1.o was not linked).
+          test -s "$ARTIFACT_DIR/cheat-toolbox.elf"
+
+          if ! file "$ARTIFACT_DIR/cheat-toolbox.elf" | grep -qi "ELF 64-bit LSB"; then
+            echo "ERROR: artifact is not a 64-bit LSB ELF" >&2
+            file "$ARTIFACT_DIR/cheat-toolbox.elf" >&2
+            exit 1
+          fi
+
+          SIZE=$(stat -c%s "$ARTIFACT_DIR/cheat-toolbox.elf")
+          if [ "$SIZE" -lt 65536 ]; then
+            echo "ERROR: cheat-toolbox.elf is suspiciously small: $SIZE bytes" >&2
+            exit 1
+          fi
+
+          ENTRY=$("$READELF" -h "$ARTIFACT_DIR/cheat-toolbox.elf" \
+            | awk '/Entry point address/ {print $NF}')
+          if [ -z "$ENTRY" ] || [ "$ENTRY" = "0x0" ]; then
+            echo "ERROR: cheat-toolbox.elf has no entry point (e_entry=$ENTRY)." >&2
+            echo "       PS5 payload loaders jump to e_entry; an entry of 0 means" >&2
+            echo "       crt1.o was not linked and the ELF will not boot." >&2
+            exit 1
+          fi
+          echo "ok: cheat-toolbox.elf entry point is $ENTRY (size $SIZE bytes)"
+
+          ls -lh "$ARTIFACT_DIR"
+
+      - name: Upload cheat-toolbox.elf artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cheat-toolbox-elf
-          path: |
-            ${{ github.workspace }}/elf-artifacts.txt
-            ${{ github.workspace }}/build/ps5-release/**/*.elf
-            ${{ github.workspace }}/build/ps5-release/**/*.ELF
-            ${{ github.workspace }}/ci-src/**/*.elf
-            ${{ github.workspace }}/ci-src/**/*.ELF
+          name: cheat-toolbox-ps5-elf
+          # GitHub Actions always packages an artifact as a .zip on download;
+          # the zip will contain `cheat-toolbox.elf` + the sha256/file/readelf
+          # metadata files at the top level. Users must unzip and send
+          # `cheat-toolbox.elf` to their PS5 payload loader -- not the .zip.
+          path: artifacts/
           if-no-files-found: error
           retention-days: 14

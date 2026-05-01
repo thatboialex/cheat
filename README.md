@@ -120,18 +120,23 @@ From a fresh clone:
      -DPS5_PAYLOAD_SDK="$PS5_PAYLOAD_SDK"
    ```
 
-6. Build
+6. Build (also adds `${PS5_PAYLOAD_SDK}/bin` to `PATH` so clang can call `prospero-lld` for the `x86_64-sie-ps5` target)
    ```bash
+   export PATH="$PS5_PAYLOAD_SDK/bin:$PATH"
    cmake --build "$BUILD_DIR" --target daemon --config Release --verbose
    ```
 
-7. Expected ELF output
-   - Primary payload output: `ci-src/bin/daemon.elf`
+7. PS5-loadable output
+   - **The PS5-loadable payload is `ci-src/bin/daemon.elf`.** This is the file you send to your PS5 payload loader (e.g. `ps5-payload-elfldr`).
+   - It is a real PIE executable for `x86_64-sie-ps5` with a valid `_start` (provided by the SDK's `crt1.o`); ELF program loaders will boot it directly into the cheat toolbox flow, which then injects the embedded `shellui.elf` into `SceShellUI`.
+   - `ci-src/daemon/assets/shellui.elf` is **not** a standalone payload. It has no `_start` and is consumed only as an `.incbin` payload baked into `daemon.elf` for the in-process `libNineS` injector. Do **not** send it to a PS5 payload loader directly.
 
-8. Verify ELF exists
+8. Verify the payload ELF
    ```bash
    test -f ci-src/bin/daemon.elf && echo "daemon.elf built"
-   file ci-src/bin/daemon.elf
+   file ci-src/bin/daemon.elf                           # expect "ELF 64-bit LSB pie executable, x86-64"
+   llvm-readelf -h ci-src/bin/daemon.elf | grep "Entry" # expect a non-zero entry point
+   sha256sum ci-src/bin/daemon.elf
    ```
 
 ### Troubleshooting
@@ -165,7 +170,29 @@ Implementation details are defined in:
 - `Source Code/shellui/include/HookedFuncs.hpp` (shortcut enum/state definitions).
 
 ## Usage
-Build output is intended for homebrew payload loading on compatible jailbroken PlayStation systems where you are authorized to run homebrew software.
+
+### Which file do I send to the PS5?
+
+Send **`cheat-toolbox.elf`** (a copy of `daemon.elf`) to your PS5 payload loader. That is the only file you need.
+
+If you build via GitHub Actions, download the `cheat-toolbox-ps5-elf` artifact (always delivered as a `.zip` by GitHub) and unzip it. The zip contains:
+
+```
+cheat-toolbox.elf            <- send this
+cheat-toolbox.elf.sha256     <- integrity hash, do not send
+cheat-toolbox.elf.file.txt   <- `file` output, do not send
+cheat-toolbox.elf.readelf.txt <- ELF header dump, do not send
+```
+
+Do **not** send any of the following to the PS5:
+
+- the `.zip` file itself,
+- `cheat-toolbox.elf.sha256`, `cheat-toolbox.elf.file.txt`, or `cheat-toolbox.elf.readelf.txt`,
+- `shellui.elf` (this is a payload embedded *inside* `cheat-toolbox.elf`; sending it standalone will not work because it has no `_start` entry),
+- any `.elf` from `build/ps5-release/CMakeFiles/`,
+- the empty placeholder ELFs under `daemon/assets/` (`ps5debug.elf`, `fps_elf.elf`, `ps5-app-dumper.elf`).
+
+`cheat-toolbox.elf` is a real `x86_64-sie-ps5` PIE executable with `_start` provided by the SDK's `crt1.o`. When loaded it opens the cheat toolbox IPC services and injects the embedded `shellui.elf` into `SceShellUI` to drive the menu.
 
 This repository does **not** provide exploit or jailbreak instructions. Use only on systems you own/control and where such execution is legally and contractually permitted.
 
@@ -196,8 +223,12 @@ The repository includes a CI workflow at `.github/workflows/build-elf.yml` that 
 6. Copies `Source Code/` into a no-space CI worktree at `ci-src/` before configuring to avoid linker-script path splitting on `-T.../linker.x`.
 7. Configures with the in-tree toolchain file and explicit `-DPS5_PAYLOAD_SDK="$GITHUB_WORKSPACE/external/ps5-payload-sdk"`.
 8. Builds the cheat toolbox target with `cmake --build "$BUILD_DIR" --target daemon --config Release --verbose`.
-9. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
-10. Uploads ELF artifacts as `cheat-toolbox-elf`.
+9. Stages the produced `daemon.elf` as `artifacts/cheat-toolbox.elf`, validates that:
+   - the file is an `ELF 64-bit LSB pie executable`,
+   - its size is at least 64 KiB,
+   - and its `e_entry` is non-zero (the previous broken artifact had `e_entry=0` because `crt1.o` was not linked),
+   then writes companion `cheat-toolbox.elf.sha256`, `cheat-toolbox.elf.file.txt`, and `cheat-toolbox.elf.readelf.txt` next to the ELF.
+10. Uploads the staged `artifacts/` directory as the `cheat-toolbox-ps5-elf` artifact.
 
 ### Required repository variables
 No repository variables are required for GitHub-hosted runners.
@@ -208,9 +239,18 @@ CI always clones the SDK into `external/ps5-payload-sdk` and sets:
 For self-hosted runners, ensure outbound Git access to `https://github.com/ps5-payload-dev/sdk` and the LLVM source tarball download referenced by `libcxx.sh`.
 
 ### Artifact output
-- Uploaded artifact name: `cheat-toolbox-elf`
-- Expected paths in build workspace: `build/ps5-release/**/*.elf` and `ci-src/bin/*.elf`
-- Primary expected file: `ci-src/bin/daemon.elf`
+- Uploaded artifact name: **`cheat-toolbox-ps5-elf`**.
+- GitHub Actions always serves artifacts as `.zip` (this is normal).
+- After downloading and unzipping, you get:
+  - `cheat-toolbox.elf` — the PS5-loadable payload. **This is the file you send to your PS5 payload loader.**
+  - `cheat-toolbox.elf.sha256`, `cheat-toolbox.elf.file.txt`, `cheat-toolbox.elf.readelf.txt` — metadata only.
+- Source path inside the build tree: `ci-src/bin/daemon.elf`. The CI step copies it to `artifacts/cheat-toolbox.elf` and uploads only that staged directory; intermediate / library / placeholder ELFs are not included in the artifact.
+
+#### Artifact troubleshooting
+- **"The artifact downloads as a `.zip`"** — This is normal. GitHub always packages workflow artifacts as zip. Unzip and use `cheat-toolbox.elf`.
+- **"There is no `.elf` inside the artifact"** — The CI staging step failed; check the workflow run for the "Stage and validate cheat-toolbox.elf artifact" step.
+- **"The ELF does not load on my PS5"** — Verify it is the unzipped `cheat-toolbox.elf` (not the zip, not `shellui.elf`, not a placeholder). Run `file cheat-toolbox.elf` (expect `ELF 64-bit LSB pie executable, x86-64`) and `llvm-readelf -h cheat-toolbox.elf | grep Entry` (expect a non-zero entry point).
+- **"Multiple `.elf` files were produced"** — Use the staged `cheat-toolbox.elf`. The repo also produces an etaHEN-format `shellui.elf` that is *only* a payload baked into `cheat-toolbox.elf`; it is not standalone-loadable.
 
 ### Reproduce CI locally (Linux)
 From repository root:

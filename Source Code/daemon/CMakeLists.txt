@@ -66,6 +66,12 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-Wa,-I${D_CWD}>
     $<$<COMPILE_LANGUAGE:CXX>:-Wa,-I${D_CWD}>
     $<$<COMPILE_LANGUAGE:ASM>:-I${D_CWD}>)
+# Force a hard ordering between the .incbin'd shellui.elf payload and the
+# compile of embeddded_payloads.c. add_dependencies() only orders the link
+# step, but .incbin runs at compile time, so we declare shellui.elf as an
+# OBJECT_DEPENDS of the source explicitly.
+set_source_files_properties("${D_SRC}/embeddded_payloads.c"
+    PROPERTIES OBJECT_DEPENDS "${D_CWD}/assets/shellui.elf")
 target_link_directories	(${PROJECT_NAME} PUBLIC "${PROJECT_ROOT}/lib")
 add_dependencies(${PROJECT_NAME} NineS shellui hijacker SelfDecryptor elfldr)
 
@@ -80,7 +86,20 @@ foreach(_stub IN ITEMS ps5debug.elf fps_elf.elf ps5-app-dumper.elf)
         file(WRITE "${_DAEMON_ASSETS}/${_stub}" "")
     endif()
 endforeach()
-target_link_libraries	(${PROJECT_NAME} PUBLIC hijacker ScePad SceSystemService SceNotification SceNet SceRegMgr SceSysmodule SceUserService SceNetCtl SceSysCore kernel_sys SceAppInstUtil NineS elfldr SelfDecryptor)
+# daemon.elf is the user-facing PS5 payload, loaded by ps5-payload-elfldr style
+# loaders that read e_entry from the ELF header and jump to it. Link in the
+# SDK's `crt1.o` (which provides `_start`, sets up the stack/argv and calls
+# `main`) plus the standard PS5 runtime libs that the SDK's `prospero-clang`
+# wrapper auto-injects for executables (libc + libSceLibcInternal + libSceNet
+# + libkernel_web). Without these the linked ELF would have e_entry=0 and no
+# libc, which is what made the previous artifact unusable on hardware.
+target_link_libraries	(${PROJECT_NAME} PUBLIC
+    "${PS5_PAYLOAD_SDK}/target/lib/crt1.o"
+    hijacker ScePad SceSystemService SceNotification SceNet SceRegMgr
+    SceSysmodule SceUserService SceNetCtl SceSysCore kernel_sys
+    SceAppInstUtil NineS elfldr SelfDecryptor
+    c++ c++abi unwind
+    c SceLibcInternal kernel_web)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Add post-build command
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

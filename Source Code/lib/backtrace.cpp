@@ -1,5 +1,15 @@
 #include "../include/backtrace.hpp"
 
+// `__text_start` / `__text_stop` are defined by the etaHEN-style linker.x used
+// for the shellui.elf payload, but daemon.elf is now linked with the SDK's
+// default linker script (so it has a real `_start` / e_entry for PS5 payload
+// loaders). Provide weak fallback definitions so the daemon link still
+// resolves; backtrace bounds are simply degenerate in that case.
+extern "C" {
+    __attribute__((weak)) char __text_start = 0;
+    __attribute__((weak)) char __text_stop  = 0;
+}
+
 const Frame * __attribute__((naked)) getFramePointer() {
 	__asm__ volatile(
 		"push %rbp\n"

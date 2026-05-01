@@ -3,3 +3,4 @@ build/
 *.elf
 *.ELF
 ci-src/
+artifacts/
