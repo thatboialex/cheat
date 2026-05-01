@@ -155,21 +155,19 @@ The repository includes a CI workflow at `.github/workflows/build-elf.yml` that 
 
 ### What the workflow does
 1. Checks out the repo (with submodules).
-2. Installs minimal Linux build dependencies (`cmake`, `ninja-build`, `clang`, `llvm`, `file`, `build-essential`, `git`).
-3. Clones the open SDK from `https://github.com/ps5-payload-dev/sdk` into `$RUNNER_TEMP/ps5sdk`.
-4. Exports both `PS5SDK` and `PS5_PAYLOAD_SDK` to that cloned path for this build.
-5. Validates SDK/toolchain files exist.
-6. Configures CMake with Ninja using the PS5 toolchain file.
-7. Runs clean + build.
-8. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
-9. Uploads ELF artifacts as `cheat-toolbox-elf`.
+2. Installs minimal Linux build dependencies (`cmake`, `ninja-build`, `clang`, `llvm`, `file`, `build-essential`).
+3. Validates required SDK variables and toolchain file.
+4. Configures CMake with Ninja using the PS5 toolchain file.
+5. Runs clean + build.
+6. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
+7. Uploads ELF artifacts as `cheat-toolbox-elf`.
 
-### SDK variables in CI
-No repository secret/variable is required for SDK paths in default CI mode: the workflow fetches the SDK directly each run and sets:
-- `PS5SDK=$RUNNER_TEMP/ps5sdk`
-- `PS5_PAYLOAD_SDK=$RUNNER_TEMP/ps5sdk`
+### Required repository variables
+Set these as repository variables (Settings → Secrets and variables → Actions → Variables):
+- `PS5SDK`: SDK root path available on the runner, must contain `cmake/toolchain-ps5.cmake`.
+- `PS5_PAYLOAD_SDK`: payload SDK root used by project includes/libraries.
 
-If you later switch to self-hosted runners and preinstalled SDK paths, update those values accordingly.
+If either variable is missing or invalid, CI fails with a clear error before build starts.
 
 ### Artifact output
 - Uploaded artifact name: `cheat-toolbox-elf`
@@ -180,11 +178,12 @@ If you later switch to self-hosted runners and preinstalled SDK paths, update th
 From repository root:
 ```bash
 cd "Source Code"
-SDK_DIR="$(mktemp -d)/ps5sdk"
-git clone --depth=1 https://github.com/ps5-payload-dev/sdk.git "$SDK_DIR"
-export PS5SDK="$SDK_DIR"
-export PS5_PAYLOAD_SDK="$SDK_DIR"
-cmake -S . -B build/ci -G Ninja   -DCMAKE_TOOLCHAIN_FILE="$PS5SDK/cmake/toolchain-ps5.cmake"   -DCMAKE_C_COMPILER=clang   -DCMAKE_CXX_COMPILER=clang++
+export PS5SDK=/path/to/ps5sdk
+export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+cmake -S . -B build/ci -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$PS5SDK/cmake/toolchain-ps5.cmake" \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++
 cmake --build build/ci --target clean
 cmake --build build/ci --verbose
 ls -lh bin
@@ -193,8 +192,8 @@ sha256sum bin/*.elf
 ```
 
 ### Troubleshooting
-- **SDK clone fails**: check GitHub network access/rate limits and retry.
-- **Missing toolchain file**: ensure SDK clone succeeded and contains `cmake/toolchain-ps5.cmake`.
+- **Missing SDK**: ensure `PS5SDK` points to a valid SDK root with `cmake/toolchain-ps5.cmake`.
 - **Missing compiler**: ensure `clang` and `clang++` are installed and on `PATH`.
+- **Wrong SDK variable path**: verify both `PS5SDK` and `PS5_PAYLOAD_SDK` are set correctly.
 - **ELF not found**: check build logs for link failures and verify output under `Source Code/bin/`.
 - **Permission denied on scripts**: if custom scripts are introduced later, ensure executable permissions are committed (`chmod +x`).
