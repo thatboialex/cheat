@@ -163,9 +163,10 @@ The repository includes a CI workflow at `.github/workflows/build-elf.yml` that 
 3. Clones the public PS5 payload SDK from `https://github.com/ps5-payload-dev/sdk` into `external/ps5-payload-sdk`.
 4. Exports `PS5_PAYLOAD_SDK` through `$GITHUB_ENV`.
 5. Prints SDK/repo diagnostics and auto-detects one of: SDK `toolchain-ps5.cmake`, SDK `bin/prospero-cmake`, or repository fallback toolchain file.
-6. Builds with `cmake --build "$BUILD_DIR" --config Release --verbose`.
-7. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
-8. Uploads ELF artifacts as `cheat-toolbox-elf`.
+6. Copies `Source Code/` into a no-space CI worktree at `ci-src/` before configuring to avoid linker-script path splitting on `-T.../linker.x`.
+7. Builds with `cmake --build "$BUILD_DIR" --config Release --verbose`.
+8. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
+9. Uploads ELF artifacts as `cheat-toolbox-elf`.
 
 ### Required repository variables
 No repository variables are required for GitHub-hosted runners.
@@ -177,16 +178,18 @@ For self-hosted runners, ensure outbound Git access to `https://github.com/ps5-p
 
 ### Artifact output
 - Uploaded artifact name: `cheat-toolbox-elf`
-- Expected path in build workspace: `Source Code/bin/*.elf`
-- Primary expected file: `Source Code/bin/daemon.elf`
+- Expected paths in build workspace: `build/ps5-release/**/*.elf` and `ci-src/bin/*.elf`
+- Primary expected file: `ci-src/bin/daemon.elf`
 
 ### Reproduce CI locally (Linux)
 From repository root:
 ```bash
 REPO_ROOT="$PWD"
-SOURCE_DIR="$REPO_ROOT/Source Code"
+SOURCE_DIR="$REPO_ROOT/ci-src"
 BUILD_DIR="$REPO_ROOT/build/ps5-release"
 SDK_DIR="$REPO_ROOT/external/ps5-payload-sdk"
+rm -rf "$SOURCE_DIR"
+rsync -a --delete "$REPO_ROOT/Source Code/" "$SOURCE_DIR/"
 mkdir -p "$REPO_ROOT/external"
 git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk "$SDK_DIR"
 export PS5_PAYLOAD_SDK="$SDK_DIR"
@@ -209,5 +212,5 @@ find "$BUILD_DIR" "$SOURCE_DIR" -type f \
 - **Missing SDK**: ensure `PS5_PAYLOAD_SDK` points to the SDK root cloned from `https://github.com/ps5-payload-dev/sdk`.
 - **Missing compiler**: ensure `clang` and `clang++` are installed and on `PATH`.
 - **Wrong SDK variable path**: verify `PS5_PAYLOAD_SDK` is set correctly.
-- **ELF not found**: check build logs for link failures and verify output under `Source Code/bin/`.
+- **ELF not found**: check build logs for link failures and verify output under `ci-src/bin/` or `build/ps5-release`.
 - **Permission denied on scripts**: if custom scripts are introduced later, ensure executable permissions are committed (`chmod +x`).
