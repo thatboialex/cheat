@@ -43,12 +43,14 @@ Required:
 - `cmake` (3.20+).
 - `ninja` generator.
 - `clang` / `clang++` (or `clang.exe` / `clang++.exe` on Windows).
-- A valid `PS5SDK` environment variable pointing to an SDK root that provides:
+- A valid `PS5_PAYLOAD_SDK` environment variable pointing to an SDK root that provides:
   - `cmake/toolchain-ps5.cmake`
-- A valid `PS5_PAYLOAD_SDK` environment variable used by this project’s includes (CI now sets this automatically by cloning the public SDK).
+  - `include/`
+
+CI now sets `PS5_PAYLOAD_SDK` automatically by cloning the public SDK.
 
 Notes:
-- `Source Code/CMakePresets.json` references `${env:PS5SDK}/cmake/toolchain-ps5.cmake`.
+- `Source Code/CMakePresets.json` currently references `${env:PS5SDK}/cmake/toolchain-ps5.cmake` for preset workflows, but CI uses explicit `cmake -S/-B` commands with `-DCMAKE_TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/cmake/toolchain-ps5.cmake"`.
 - `Source Code/CMakeLists.txt` includes `${PS5_PAYLOAD_SDK}` and `${PS5_PAYLOAD_SDK}/include`.
 
 ## Step-by-step ELF build guide
@@ -63,15 +65,19 @@ From a fresh clone:
 
 2. Export required environment variables (example names/paths)
    ```bash
-   export PS5SDK=/path/to/ps5sdk
    mkdir -p external
    git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk external/ps5-payload-sdk
    export PS5_PAYLOAD_SDK="$PWD/external/ps5-payload-sdk"
+   export TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/cmake/toolchain-ps5.cmake"
    ```
 
 3. Configure (non-Windows host)
    ```bash
-   cmake --preset nix-base
+   cmake -S . -B "$PWD/../build/ps5-release" -G Ninja \
+     -DCMAKE_BUILD_TYPE=Release \
+     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+     -DCMAKE_C_COMPILER=clang \
+     -DCMAKE_CXX_COMPILER=clang++
    ```
    On Windows, use:
    ```powershell
@@ -80,20 +86,12 @@ From a fresh clone:
 
 4. Clean build directory (recommended for reproducibility)
    ```bash
-   cmake --build --preset default-build-nix --target clean
-   ```
-   On Windows:
-   ```powershell
-   cmake --build --preset default-build-windows --target clean
+   cmake --build "$PWD/../build/ps5-release" --config Release --verbose
    ```
 
 5. Build
    ```bash
-   cmake --build --preset default-build-nix
-   ```
-   On Windows:
-   ```powershell
-   cmake --build --preset default-build-windows
+   cmake --build "$PWD/../build/ps5-release" --config Release --verbose
    ```
 
 6. Expected ELF output
@@ -106,9 +104,9 @@ From a fresh clone:
    ```
 
 ### Troubleshooting
-- **Preset configure fails with missing toolchain file**: verify `PS5SDK` points to a valid SDK root containing `cmake/toolchain-ps5.cmake`.
+- **Configure fails with missing toolchain file**: verify `PS5_PAYLOAD_SDK` points to a valid SDK root containing `cmake/toolchain-ps5.cmake`.
 - **Missing SDK headers/libraries at compile/link time**: verify `PS5_PAYLOAD_SDK` and local SDK library layout expected by `Source Code/lib/`.
-- **Preset mismatch on host OS**: use `nix-base/default-build-nix` on Linux/macOS and `ps5-base/default-build-windows` on Windows.
+- **Preset mismatch on host OS**: ensure `TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/cmake/toolchain-ps5.cmake"` points to a real file.
 
 ## Controller mappings
 Controller shortcut modes are configurable in the toolbox settings and persisted via config keys.
@@ -158,19 +156,21 @@ The repository includes a CI workflow at `.github/workflows/build-elf.yml` that 
 ### What the workflow does
 1. Checks out the repo (with submodules).
 2. Installs minimal Linux build dependencies (`cmake`, `ninja-build`, `clang`, `llvm`, `file`, `build-essential`).
-3. Clones the public PS5 payload SDK from `https://github.com/ps5-payload-dev/sdk` into `external/ps5-payload-sdk` (or uses optional `PS5_PAYLOAD_SDK` repo variable if it points to an existing runner path).
-4. Exports `PS5_PAYLOAD_SDK` through `$GITHUB_ENV` and validates SDK/toolchain paths.
-5. Configures CMake with Ninja using the PS5 toolchain file.
-6. Runs clean + build.
-6. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
-7. Uploads ELF artifacts as `cheat-toolbox-elf`.
+3. Clones the public PS5 payload SDK from `https://github.com/ps5-payload-dev/sdk` into `external/ps5-payload-sdk`.
+4. Exports `PS5_PAYLOAD_SDK` through `$GITHUB_ENV`.
+5. Resolves `TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/cmake/toolchain-ps5.cmake"`, validates it, and configures CMake with explicit absolute `-S`, `-B`, and `-DCMAKE_TOOLCHAIN_FILE`.
+6. Builds with `cmake --build "$BUILD_DIR" --config Release --verbose`.
+7. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
+8. Uploads ELF artifacts as `cheat-toolbox-elf`.
 
 ### Required repository variables
-Set these as repository variables (Settings → Secrets and variables → Actions → Variables):
-- `PS5SDK`: SDK root path available on the runner, must contain `cmake/toolchain-ps5.cmake`.
-- `PS5_PAYLOAD_SDK` (optional): override path for self-hosted runners that already have payload SDK pre-installed.
+No repository variables are required for GitHub-hosted runners.
 
-`PS5_PAYLOAD_SDK` is no longer required for GitHub-hosted CI runners because the workflow clones the SDK automatically.
+CI always clones the SDK into `external/ps5-payload-sdk` and sets:
+- `PS5_PAYLOAD_SDK=$GITHUB_WORKSPACE/external/ps5-payload-sdk`
+- `CMAKE_TOOLCHAIN_FILE=$PS5_PAYLOAD_SDK/cmake/toolchain-ps5.cmake`
+
+For self-hosted runners, ensure outbound Git access to `https://github.com/ps5-payload-dev/sdk`.
 
 ### Artifact output
 - Uploaded artifact name: `cheat-toolbox-elf`
@@ -180,25 +180,27 @@ Set these as repository variables (Settings → Secrets and variables → Action
 ### Reproduce CI locally (Linux)
 From repository root:
 ```bash
-cd "Source Code"
-export PS5SDK=/path/to/ps5sdk
-mkdir -p external
-git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk external/ps5-payload-sdk
-export PS5_PAYLOAD_SDK="$PWD/external/ps5-payload-sdk"
-cmake -S . -B build/ci -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE="$PS5SDK/cmake/toolchain-ps5.cmake" \
+REPO_ROOT="$PWD"
+SOURCE_DIR="$REPO_ROOT/Source Code"
+BUILD_DIR="$REPO_ROOT/build/ps5-release"
+SDK_DIR="$REPO_ROOT/external/ps5-payload-sdk"
+mkdir -p "$REPO_ROOT/external"
+git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk "$SDK_DIR"
+export PS5_PAYLOAD_SDK="$SDK_DIR"
+TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/cmake/toolchain-ps5.cmake"
+cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++
-cmake --build build/ci --target clean
-cmake --build build/ci --verbose
-ls -lh bin
-file bin/*.elf
-sha256sum bin/*.elf
+cmake --build "$BUILD_DIR" --config Release --verbose
+find "$BUILD_DIR" "$SOURCE_DIR" -type f \
+  \( -name "*.elf" -o -name "*.ELF" \) -print
 ```
 
 ### Troubleshooting
-- **Missing SDK**: ensure `PS5SDK` points to a valid SDK root with `cmake/toolchain-ps5.cmake`.
+- **Missing SDK**: ensure `PS5_PAYLOAD_SDK` points to a valid SDK root with `cmake/toolchain-ps5.cmake`.
 - **Missing compiler**: ensure `clang` and `clang++` are installed and on `PATH`.
-- **Wrong SDK variable path**: verify both `PS5SDK` and `PS5_PAYLOAD_SDK` are set correctly.
+- **Wrong SDK variable path**: verify `PS5_PAYLOAD_SDK` is set correctly.
 - **ELF not found**: check build logs for link failures and verify output under `Source Code/bin/`.
 - **Permission denied on scripts**: if custom scripts are introduced later, ensure executable permissions are committed (`chmod +x`).
