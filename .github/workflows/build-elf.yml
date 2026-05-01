@@ -1,0 +1,87 @@
+name: Build Cheat Toolbox ELF
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-elf:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: Source Code
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build clang llvm file build-essential git
+
+      - name: Fetch PS5 Payload SDK (Option A)
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/ps5-payload-dev/sdk.git "$RUNNER_TEMP/ps5sdk"
+          echo "PS5SDK=$RUNNER_TEMP/ps5sdk" >> "$GITHUB_ENV"
+          echo "PS5_PAYLOAD_SDK=$RUNNER_TEMP/ps5sdk" >> "$GITHUB_ENV"
+
+      - name: Validate SDK environment
+        run: |
+          set -euo pipefail
+          test -f "$PS5SDK/cmake/toolchain-ps5.cmake" || {
+            echo "Missing toolchain file: $PS5SDK/cmake/toolchain-ps5.cmake" >&2
+            exit 1
+          }
+          test -d "$PS5_PAYLOAD_SDK/include" || {
+            echo "Missing include directory: $PS5_PAYLOAD_SDK/include" >&2
+            exit 1
+          }
+
+      # NOTE: We intentionally avoid CMake presets in CI because current
+      # CMakePresets.json contains vendor macros that are not portable in this environment.
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/ci -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PS5SDK/cmake/toolchain-ps5.cmake" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Clean
+        run: cmake --build build/ci --target clean
+
+      - name: Build
+        run: cmake --build build/ci --verbose
+
+      - name: Verify ELF outputs
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          elfs=(bin/*.elf)
+          if [ ${#elfs[@]} -eq 0 ]; then
+            echo "No ELF files found under Source Code/bin" >&2
+            exit 1
+          fi
+
+          ls -lh bin
+          file "${elfs[@]}"
+          sha256sum "${elfs[@]}"
+
+      - name: Upload ELF artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cheat-toolbox-elf
+          path: |
+            Source Code/bin/*.elf
+          if-no-files-found: error
+          retention-days: 14
