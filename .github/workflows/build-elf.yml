@@ -9,6 +9,9 @@ on:
 
 env:
   PS5_PAYLOAD_SDK: ${{ github.workspace }}/external/ps5-payload-sdk
+  FINAL_ELF_TARGET: daemon
+  FINAL_ELF_SOURCE: ${{ github.workspace }}/ci-src/bin/daemon.elf
+  ARTIFACT_ELF_NAME: cheat-toolbox.elf
 
 jobs:
   build-elf:
@@ -65,11 +68,6 @@ jobs:
         run: |
           set -euo pipefail
           SDK_DIR="${PS5_PAYLOAD_SDK}"
-          # Install the SDK in-place (DESTDIR=${SDK_DIR}). The final 'install'
-          # rule in the top Makefile copies samples to DESTDIR/samples; when
-          # DESTDIR is the SDK source tree itself this no-ops to a same-file
-          # cp error - we tolerate it because every prior subdir already
-          # produced its outputs in $SDK_DIR/{target,bin,ldscripts,toolchain}.
           make -C "$SDK_DIR" DESTDIR="$SDK_DIR" install || true
           test -f "$SDK_DIR/target/include/string.h"
           test -f "$SDK_DIR/target/include/stdlib.h"
@@ -81,9 +79,6 @@ jobs:
         run: |
           set -euo pipefail
           export PS5_PAYLOAD_SDK="${PS5_PAYLOAD_SDK}"
-          # libcxx.sh downloads the official llvm-project source tarball,
-          # builds libcxx + libcxxabi + libunwind for x86_64-sie-ps5 and
-          # installs the C++ runtime headers/archives into target/.
           "$PS5_PAYLOAD_SDK/libcxx.sh"
           test -f "$PS5_PAYLOAD_SDK/target/include/c++/v1/cstdint"
           test -f "$PS5_PAYLOAD_SDK/target/lib/libc++.a"
@@ -101,8 +96,7 @@ jobs:
             fi
             echo "ok: $f"
           done
-          ls "$PS5_PAYLOAD_SDK/target/lib" | head
-          ls "$PS5_PAYLOAD_SDK/target/include/c++/v1" | head -5 || true
+          test -f "$PS5_PAYLOAD_SDK/target/include/c++/v1/cstdint"
 
       - name: Stage no-space source copy
         run: |
@@ -117,9 +111,6 @@ jobs:
       - name: Configure (CMake / Ninja)
         run: |
           set -euo pipefail
-          # The SDK's prospero-* host wrappers (prospero-lld, prospero-llvm-config)
-          # must be on PATH because clang resolves the linker for the
-          # `x86_64-sie-ps5` target by exec'ing `prospero-lld`.
           echo "${PS5_PAYLOAD_SDK}/bin" >> "$GITHUB_PATH"
           export PATH="${PS5_PAYLOAD_SDK}/bin:$PATH"
 
@@ -135,44 +126,62 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++ \
             -DPS5_PAYLOAD_SDK="$PS5_PAYLOAD_SDK"
 
-      - name: Build daemon ELF
+      - name: Build final PS5 ELF target
         run: |
           set -euo pipefail
           export PATH="${PS5_PAYLOAD_SDK}/bin:$PATH"
           BUILD_DIR="$GITHUB_WORKSPACE/build/ps5-release"
-          cmake --build "$BUILD_DIR" --target daemon --config Release --verbose
+          cmake --build "$BUILD_DIR" --target "$FINAL_ELF_TARGET" --config Release --verbose
 
-      - name: Verify ELF outputs
+      - name: Validate and stage artifact
         run: |
           set -euo pipefail
-          REPO_ROOT="$GITHUB_WORKSPACE"
-          SOURCE_DIR="$REPO_ROOT/ci-src"
-          BUILD_DIR="$REPO_ROOT/build/ps5-release"
+          export PATH="${PS5_PAYLOAD_SDK}/bin:$PATH"
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/artifacts"
+          FINAL_ELF="$FINAL_ELF_SOURCE"
+          STAGED_ELF="$ARTIFACT_DIR/$ARTIFACT_ELF_NAME"
 
-          mapfile -t elfs < <(find "$BUILD_DIR" "$SOURCE_DIR" -type f \( -name "*.elf" -o -name "*.ELF" \) | sort)
-          if [ ${#elfs[@]} -eq 0 ]; then
-            echo "No ELF files found after successful build." >&2
-            echo "Searched: $BUILD_DIR and $SOURCE_DIR" >&2
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR"
+
+          if [ ! -f "$FINAL_ELF" ]; then
+            echo "Final ELF not found at expected path: $FINAL_ELF" >&2
+            echo "Available ELF files:" >&2
+            find "$GITHUB_WORKSPACE/build/ps5-release" "$GITHUB_WORKSPACE/ci-src" -type f \( -name "*.elf" -o -name "*.ELF" \) -print -exec ls -lh {} \; -exec file {} \;
             exit 1
           fi
 
-          for elf in "${elfs[@]}"; do
-            ls -lh "$elf"
-            file "$elf" || true
-            sha256sum "$elf"
-          done
+          cp "$FINAL_ELF" "$STAGED_ELF"
+          test -s "$STAGED_ELF"
 
-          printf '%s\n' "${elfs[@]}" > "$REPO_ROOT/elf-artifacts.txt"
+          if ! file "$STAGED_ELF" | tee "$ARTIFACT_DIR/$ARTIFACT_ELF_NAME.file.txt" | grep -qi "ELF"; then
+            echo "Staged output is not an ELF." >&2
+            exit 1
+          fi
 
-      - name: Upload ELF artifacts
+          ELF_SIZE="$(stat -c%s "$STAGED_ELF")"
+          if [ "$ELF_SIZE" -lt 4096 ]; then
+            echo "ELF is suspiciously small: $ELF_SIZE bytes" >&2
+            exit 1
+          fi
+
+          sha256sum "$STAGED_ELF" | tee "$ARTIFACT_DIR/$ARTIFACT_ELF_NAME.sha256"
+
+          if command -v llvm-readelf >/dev/null 2>&1; then
+            llvm-readelf -h "$STAGED_ELF" | tee "$ARTIFACT_DIR/$ARTIFACT_ELF_NAME.readelf.txt"
+          elif command -v readelf >/dev/null 2>&1; then
+            readelf -h "$STAGED_ELF" | tee "$ARTIFACT_DIR/$ARTIFACT_ELF_NAME.readelf.txt"
+          else
+            echo "Neither llvm-readelf nor readelf is available." >&2
+            exit 1
+          fi
+
+          strings "$STAGED_ELF" | grep -E -i "cheat|toolbox|controller|pad|shortcut|menu|toggle" | head -100 > "$ARTIFACT_DIR/$ARTIFACT_ELF_NAME.strings.txt" || true
+
+      - name: Upload PS5 ELF artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cheat-toolbox-elf
-          path: |
-            ${{ github.workspace }}/elf-artifacts.txt
-            ${{ github.workspace }}/build/ps5-release/**/*.elf
-            ${{ github.workspace }}/build/ps5-release/**/*.ELF
-            ${{ github.workspace }}/ci-src/**/*.elf
-            ${{ github.workspace }}/ci-src/**/*.ELF
+          name: cheat-toolbox-ps5-elf
+          path: artifacts/
           if-no-files-found: error
           retention-days: 14
