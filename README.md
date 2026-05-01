@@ -172,9 +172,10 @@ The repository includes a CI workflow at `.github/workflows/build-elf.yml` that 
 4. Exports `PS5_PAYLOAD_SDK` through `$GITHUB_ENV`.
 5. Prints SDK/repo diagnostics and auto-detects one of: SDK `toolchain-ps5.cmake`, SDK `bin/prospero-cmake`, or repository fallback toolchain file.
 6. Copies `Source Code/` into a no-space CI worktree at `ci-src/` before configuring to avoid linker-script path splitting on `-T.../linker.x`.
-7. Configures with explicit `-DPS5_PAYLOAD_SDK="$GITHUB_WORKSPACE/external/ps5-payload-sdk"` and builds with `cmake --build "$BUILD_DIR" --config Release --verbose`.
-8. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
-9. Uploads ELF artifacts as `cheat-toolbox-elf`.
+7. Configures with explicit `-DPS5_PAYLOAD_SDK="$GITHUB_WORKSPACE/external/ps5-payload-sdk"` and emits CMake dependency diagnostics before configure.
+8. Builds the cheat toolbox target explicitly with `cmake --build "$BUILD_DIR" --target daemon --config Release --verbose`.
+9. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
+10. Uploads ELF artifacts as `cheat-toolbox-elf`.
 
 ### Required repository variables
 No repository variables are required for GitHub-hosted runners.
@@ -207,11 +208,12 @@ if [ -n "$SDK_TOOLCHAIN" ]; then
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$SDK_TOOLCHAIN" \
     -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DPS5_PAYLOAD_SDK="$PS5_PAYLOAD_SDK"
 else
   "$PS5_PAYLOAD_SDK/bin/prospero-cmake" -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release
 fi
-cmake --build "$BUILD_DIR" --config Release --verbose
+cmake --build "$BUILD_DIR" --target daemon --config Release --verbose
 find "$BUILD_DIR" "$SOURCE_DIR" -type f \
   \( -name "*.elf" -o -name "*.ELF" \) -print
 ```
@@ -220,5 +222,6 @@ find "$BUILD_DIR" "$SOURCE_DIR" -type f \
 - **Missing SDK**: ensure `PS5_PAYLOAD_SDK` points to the SDK root cloned from `https://github.com/ps5-payload-dev/sdk`.
 - **Missing compiler**: ensure `clang` and `clang++` are installed and on `PATH`.
 - **Wrong SDK variable path**: verify `PS5_PAYLOAD_SDK` is set correctly.
+- **`The dependency target "NidResolver" of target "hijacker" does not exist.`**: this means the `libNidResolver` target was not added before `libhijacker`, or legacy dependency wiring referenced a non-existent target. Ensure the top-level CMake graph includes `add_subdirectory(libNidResolver)` before `add_subdirectory(libhijacker)` and that `hijacker` links `NidResolver` as a real target.
 - **ELF not found**: check build logs for link failures and verify output under `ci-src/bin/` or `build/ps5-release`.
 - **Permission denied on scripts**: if custom scripts are introduced later, ensure executable permissions are committed (`chmod +x`).

@@ -29,6 +29,8 @@ include_directories(SYSTEM "${PS5_PAYLOAD_SDK}")
 include_directories(SYSTEM "${PS5_PAYLOAD_SDK}/include")
 
 # Cheats-only build graph.
+# Required order: NidResolver -> hijacker -> shellui/daemon.
+add_subdirectory(libNidResolver)
 add_subdirectory(libhijacker)
 add_subdirectory(libNineS)
 add_subdirectory(libelfldr)

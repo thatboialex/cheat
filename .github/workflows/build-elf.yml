@@ -124,9 +124,13 @@ jobs:
           test -f "$SOURCE_DIR/linker.x"
           test -f "$REPO_TOOLCHAIN"
 
+          echo "CMake target/dependency references:"
+          rg -n "NidResolver|add_subdirectory|add_dependencies|add_library|add_executable|target_link_libraries" "$SOURCE_DIR" || true
+
           echo "Configure command: $CONFIGURE_CMD"
           eval "$CONFIGURE_CMD"
-          cmake --build "$BUILD_DIR" --config Release --verbose
+          cmake --build "$BUILD_DIR" --target help | sed -n "1,200p" || true
+          cmake --build "$BUILD_DIR" --target daemon --config Release --verbose
 
       - name: Verify ELF outputs
         run: |
