@@ -45,7 +45,7 @@ Required:
 - `clang` / `clang++` (or `clang.exe` / `clang++.exe` on Windows).
 - A valid `PS5SDK` environment variable pointing to an SDK root that provides:
   - `cmake/toolchain-ps5.cmake`
-- A valid `PS5_PAYLOAD_SDK` environment variable used by this project’s includes.
+- A valid `PS5_PAYLOAD_SDK` environment variable used by this project’s includes (CI now sets this automatically by cloning the public SDK).
 
 Notes:
 - `Source Code/CMakePresets.json` references `${env:PS5SDK}/cmake/toolchain-ps5.cmake`.
@@ -64,7 +64,9 @@ From a fresh clone:
 2. Export required environment variables (example names/paths)
    ```bash
    export PS5SDK=/path/to/ps5sdk
-   export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+   mkdir -p external
+   git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk external/ps5-payload-sdk
+   export PS5_PAYLOAD_SDK="$PWD/external/ps5-payload-sdk"
    ```
 
 3. Configure (non-Windows host)
@@ -156,18 +158,19 @@ The repository includes a CI workflow at `.github/workflows/build-elf.yml` that 
 ### What the workflow does
 1. Checks out the repo (with submodules).
 2. Installs minimal Linux build dependencies (`cmake`, `ninja-build`, `clang`, `llvm`, `file`, `build-essential`).
-3. Validates required SDK variables and toolchain file.
-4. Configures CMake with Ninja using the PS5 toolchain file.
-5. Runs clean + build.
+3. Clones the public PS5 payload SDK from `https://github.com/ps5-payload-dev/sdk` into `external/ps5-payload-sdk` (or uses optional `PS5_PAYLOAD_SDK` repo variable if it points to an existing runner path).
+4. Exports `PS5_PAYLOAD_SDK` through `$GITHUB_ENV` and validates SDK/toolchain paths.
+5. Configures CMake with Ninja using the PS5 toolchain file.
+6. Runs clean + build.
 6. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
 7. Uploads ELF artifacts as `cheat-toolbox-elf`.
 
 ### Required repository variables
 Set these as repository variables (Settings → Secrets and variables → Actions → Variables):
 - `PS5SDK`: SDK root path available on the runner, must contain `cmake/toolchain-ps5.cmake`.
-- `PS5_PAYLOAD_SDK`: payload SDK root used by project includes/libraries.
+- `PS5_PAYLOAD_SDK` (optional): override path for self-hosted runners that already have payload SDK pre-installed.
 
-If either variable is missing or invalid, CI fails with a clear error before build starts.
+`PS5_PAYLOAD_SDK` is no longer required for GitHub-hosted CI runners because the workflow clones the SDK automatically.
 
 ### Artifact output
 - Uploaded artifact name: `cheat-toolbox-elf`
@@ -179,7 +182,9 @@ From repository root:
 ```bash
 cd "Source Code"
 export PS5SDK=/path/to/ps5sdk
-export PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk
+mkdir -p external
+git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk external/ps5-payload-sdk
+export PS5_PAYLOAD_SDK="$PWD/external/ps5-payload-sdk"
 cmake -S . -B build/ci -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$PS5SDK/cmake/toolchain-ps5.cmake" \
   -DCMAKE_C_COMPILER=clang \
