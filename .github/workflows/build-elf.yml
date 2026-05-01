@@ -16,7 +16,7 @@ jobs:
         working-directory: Source Code
     env:
       PS5SDK: ${{ vars.PS5SDK }}
-      PS5_PAYLOAD_SDK: ${{ vars.PS5_PAYLOAD_SDK }}
+      PS5_PAYLOAD_SDK_OVERRIDE: ${{ vars.PS5_PAYLOAD_SDK }}
 
     steps:
       - name: Checkout
@@ -29,17 +29,47 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build clang llvm file build-essential
+            cmake ninja-build clang llvm file build-essential git ca-certificates
+
+      - name: Resolve PS5 payload SDK path
+        run: |
+          set -euo pipefail
+          SDK_DIR="$GITHUB_WORKSPACE/external/ps5-payload-sdk"
+
+          # Optional override for self-hosted runners that pre-provision the SDK.
+          if [ -n "${PS5_PAYLOAD_SDK_OVERRIDE:-}" ] && [ -d "${PS5_PAYLOAD_SDK_OVERRIDE}" ]; then
+            SDK_DIR="${PS5_PAYLOAD_SDK_OVERRIDE}"
+            echo "Using preconfigured PS5 payload SDK path: ${SDK_DIR}"
+          else
+            rm -rf "${SDK_DIR}"
+            mkdir -p "$(dirname "${SDK_DIR}")"
+            git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk "${SDK_DIR}"
+          fi
+
+          echo "PS5_PAYLOAD_SDK=${SDK_DIR}" >> "$GITHUB_ENV"
 
       - name: Validate SDK environment
         run: |
           set -euo pipefail
           : "${PS5SDK:?PS5SDK repo variable is required and must point to an SDK root on the runner.}"
-          : "${PS5_PAYLOAD_SDK:?PS5_PAYLOAD_SDK repo variable is required and must point to payload SDK headers/libs on the runner.}"
+          : "${PS5_PAYLOAD_SDK:?PS5_PAYLOAD_SDK is empty after SDK setup.}"
           test -f "$PS5SDK/cmake/toolchain-ps5.cmake" || {
             echo "Missing toolchain file: $PS5SDK/cmake/toolchain-ps5.cmake" >&2
             exit 1
           }
+
+          test -d "$PS5_PAYLOAD_SDK" || {
+            echo "Missing SDK directory: $PS5_PAYLOAD_SDK" >&2
+            exit 1
+          }
+
+          echo "Resolved PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK"
+          ls -la "$PS5_PAYLOAD_SDK" | sed -n '1,80p'
+          test -d "$PS5_PAYLOAD_SDK/include" || {
+            echo "Missing include directory: $PS5_PAYLOAD_SDK/include" >&2
+            exit 1
+          }
+          find "$PS5_PAYLOAD_SDK/include" -maxdepth 2 -type f | sed -n '1,40p'
 
       # NOTE: We intentionally avoid CMake presets in CI because current
       # CMakePresets.json contains vendor macros that are not portable in this environment.
