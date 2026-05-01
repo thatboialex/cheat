@@ -57,8 +57,10 @@ jobs:
 
           test -d "$SOURCE_DIR"
           test -d "$SDK_DIR"
+          test -f "$SOURCE_DIR/CMakeLists.txt"
           test -f "$SOURCE_DIR/linker.x"
           test -f "$SOURCE_DIR/stubber/toolchain.cmake"
+          find "$PS5_PAYLOAD_SDK" -maxdepth 3 -type d | sort | head -100
 
           echo "=== Repo build-related files ==="
           find "$REPO_ROOT" -maxdepth 4 -type f | sort | sed "s#^$REPO_ROOT/##" | grep -E '(^|/)(CMakeLists.txt|CMakePresets.json|Makefile|.*\.cmake|.*\.sh|linker\.x|\.github/workflows/.*\.yml)$' || true
@@ -92,13 +94,13 @@ jobs:
           CONFIGURE_CMD=""
           if [ -n "$SDK_TOOLCHAIN" ] && [ -f "$SDK_TOOLCHAIN" ]; then
             echo "Using SDK toolchain file: $SDK_TOOLCHAIN"
-            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$SDK_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$SDK_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DPS5_PAYLOAD_SDK=\"$SDK_DIR\""
           elif [ -x "$SDK_DIR/bin/prospero-cmake" ]; then
             echo "Using SDK wrapper: $SDK_DIR/bin/prospero-cmake"
-            CONFIGURE_CMD="\"$SDK_DIR/bin/prospero-cmake\" -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release"
+            CONFIGURE_CMD="\"$SDK_DIR/bin/prospero-cmake\" -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DPS5_PAYLOAD_SDK=\"$SDK_DIR\""
           elif [ -f "$REPO_TOOLCHAIN" ]; then
             echo "Using repository toolchain file: $REPO_TOOLCHAIN"
-            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$REPO_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$REPO_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DPS5_PAYLOAD_SDK=\"$SDK_DIR\""
           else
             echo "ERROR: no valid PS5 configure path found." >&2
             echo "pwd=$(pwd)" >&2
@@ -116,6 +118,9 @@ jobs:
           echo "SOURCE_DIR=$SOURCE_DIR"
           echo "BUILD_DIR=$BUILD_DIR"
           echo "TOOLCHAIN_FILE=$REPO_TOOLCHAIN"
+          test -d "$PS5_PAYLOAD_SDK"
+          test -d "$SOURCE_DIR"
+          test -f "$SOURCE_DIR/CMakeLists.txt"
           test -f "$SOURCE_DIR/linker.x"
           test -f "$REPO_TOOLCHAIN"
 
