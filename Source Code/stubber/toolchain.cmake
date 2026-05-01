@@ -1,28 +1,68 @@
 cmake_minimum_required(VERSION 3.20)
 
-if(DEFINED CMAKE_CROSSCOMPILING)
+if(DEFINED CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING)
     set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
     return()
 endif()
 
 set(TOOLCHAIN_PATH "${CMAKE_CURRENT_LIST_DIR}")
-#set(CMAKE_MODULE_PATH  "${TOOLCHAIN_PATH}/cmake/Modules")
 
+# Resolve PS5_PAYLOAD_SDK from CMake var or environment.
+if(NOT DEFINED PS5_PAYLOAD_SDK OR PS5_PAYLOAD_SDK STREQUAL "")
+    set(PS5_PAYLOAD_SDK "$ENV{PS5_PAYLOAD_SDK}")
+endif()
 
-set(CMAKE_SYSTEM_NAME FreeBSD)
-set(CMAKE_SYSTEM_VERSION 11)
-set(CMAKE_SYSTEM_PROCESSOR x86_64)
+if(NOT PS5_PAYLOAD_SDK)
+    message(FATAL_ERROR
+        "PS5_PAYLOAD_SDK is required. Set the env var PS5_PAYLOAD_SDK or pass "
+        "-DPS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk to cmake.")
+endif()
 
+file(TO_CMAKE_PATH "${PS5_PAYLOAD_SDK}" PS5_PAYLOAD_SDK)
 
-#set(UNIX 1)
+if(NOT EXISTS "${PS5_PAYLOAD_SDK}")
+    message(FATAL_ERROR "PS5_PAYLOAD_SDK does not exist: ${PS5_PAYLOAD_SDK}")
+endif()
+
+# The ps5-payload-sdk install layout is:
+#   ${PS5_PAYLOAD_SDK}/target/include    standard libc / FreeBSD / PS5 headers
+#   ${PS5_PAYLOAD_SDK}/target/lib        libc.a, crt1.o, libSce*.so etc.
+#   ${PS5_PAYLOAD_SDK}/bin               prospero-* host wrappers
+# The SDK Makefile must have been run with `make DESTDIR=${PS5_PAYLOAD_SDK} install`
+# (or the SDK release zip extracted) before configuring this project.
+set(_PS5_TARGET_ROOT  "${PS5_PAYLOAD_SDK}/target")
+set(_PS5_TARGET_INCLUDE "${_PS5_TARGET_ROOT}/include")
+set(_PS5_TARGET_LIB     "${_PS5_TARGET_ROOT}/lib")
+
+if(NOT EXISTS "${_PS5_TARGET_INCLUDE}/string.h")
+    message(FATAL_ERROR
+        "PS5 SDK target headers not found at ${_PS5_TARGET_INCLUDE}.\n"
+        "Run `make DESTDIR=${PS5_PAYLOAD_SDK} install` inside the SDK checkout, "
+        "or extract the SDK release zip into ${PS5_PAYLOAD_SDK}.")
+endif()
+
+set(CMAKE_SYSTEM_NAME       FreeBSD)
+set(CMAKE_SYSTEM_VERSION    9)
+set(CMAKE_SYSTEM_PROCESSOR  x86_64)
+set(CMAKE_CROSSCOMPILING    1)
+
 set(PS5 1)
-set(CMAKE_SYSROOT "${TOOLCHAIN_PATH}")
+set(PROSPERO 1)
+
+# Use the installed SDK target tree as the sysroot so <string.h>, <stdlib.h>,
+# <elf.h>, and the FreeBSD/PS5 system headers are discoverable via -isysroot.
+set(CMAKE_SYSROOT "${_PS5_TARGET_ROOT}")
+
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM BOTH)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 set(CMAKE_C_STANDARD_DEFAULT 17)
 set(CMAKE_CXX_STANDARD_DEFAULT 20)
 
-
-set(TOOLCHAIN_TRIPLE x86_64-pc-freebsd12-elf)
+# The cheats-only sources compile with the PS5 (Sony) clang triple.
+set(TOOLCHAIN_TRIPLE x86_64-sie-ps5)
 
 set(CMAKE_ASM_COMPILER clang)
 set(CMAKE_ASM_COMPILER_TARGET ${TOOLCHAIN_TRIPLE})
@@ -35,13 +75,35 @@ set(CMAKE_ASM_FLAGS_INIT "-fno-exceptions")
 set(CMAKE_C_FLAGS_INIT   "-fno-exceptions")
 set(CMAKE_CXX_FLAGS_INIT "-fno-exceptions")
 
+# Inject the SDK target include dir as the FIRST system include for every
+# translation unit. We add it via CMAKE_<LANG>_STANDARD_INCLUDE_DIRECTORIES
+# (rather than -isystem in CMAKE_C_FLAGS_INIT) so it is appended via
+# `-isystem` to every compile command without being detected as part of the
+# compiler's implicit include set (which would let CMake silently strip it).
+# Subprojects that reset CMAKE_C_FLAGS therefore still get the SDK headers.
+set(_PS5_CXX_INCLUDE "${_PS5_TARGET_INCLUDE}/c++/v1")
+set(CMAKE_C_STANDARD_INCLUDE_DIRECTORIES   "${_PS5_TARGET_INCLUDE}")
+if(EXISTS "${_PS5_CXX_INCLUDE}")
+    set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES
+        "${_PS5_CXX_INCLUDE}" "${_PS5_TARGET_INCLUDE}")
+else()
+    set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES "${_PS5_TARGET_INCLUDE}")
+endif()
+set(CMAKE_ASM_STANDARD_INCLUDE_DIRECTORIES "${_PS5_TARGET_INCLUDE}")
+
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 set(LINKER_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../linker.x")
-set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=lld -fPIC -nodefaultlibs")
+# Note: clang's `x86_64-sie-ps5` target rejects `-fuse-ld=lld`; lld is already
+# the default linker driven by the SDK's prospero-lld wrapper / clang for this
+# target, so we omit -fuse-ld here.
+set(CMAKE_EXE_LINKER_FLAGS "-fPIC -nodefaultlibs -L${_PS5_TARGET_LIB}")
 add_link_options("LINKER:-T,${LINKER_SCRIPT}")
-set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=lld -nostdlib")
-add_link_options("LINKER:SHELL:-shared --build-id=none -zmax-page-size=16384 -zcommon-page-size=16384 --hash-style=sysv")
+set(CMAKE_SHARED_LINKER_FLAGS "-nostdlib -L${_PS5_TARGET_LIB}")
+# NOTE: pass `--shared` (long form) so the SDK's prospero-lld wrapper,
+# which only recognises the long form when deciding to drop its default `-pie`,
+# does not produce a `-shared`+`-pie` conflict.
+add_link_options("LINKER:SHELL:--shared --build-id=none -zmax-page-size=16384 -zcommon-page-size=16384 --hash-style=sysv")
 
 set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
-set (CMAKE_C_LINKER_WRAPPER_FLAG "-Xlinker" " ")
+set(CMAKE_C_LINKER_WRAPPER_FLAG "-Xlinker" " ")

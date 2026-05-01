@@ -25,8 +25,18 @@ message(STATUS "CMAKE_SYSROOT=${CMAKE_SYSROOT}")
 message(STATUS "CMAKE_SOURCE_DIR=${CMAKE_SOURCE_DIR}")
 
 include_directories (SYSTEM "${PROJECT_ROOT}/include")
-include_directories(SYSTEM "${PS5_PAYLOAD_SDK}")
-include_directories(SYSTEM "${PS5_PAYLOAD_SDK}/include")
+
+# The ps5-payload-sdk install layout puts every libc / FreeBSD / PS5 header
+# under ${PS5_PAYLOAD_SDK}/target/include after `make DESTDIR=<sdk> install`.
+if(EXISTS "${PS5_PAYLOAD_SDK}/target/include")
+  include_directories(SYSTEM "${PS5_PAYLOAD_SDK}/target/include")
+endif()
+if(EXISTS "${PS5_PAYLOAD_SDK}/include")
+  include_directories(SYSTEM "${PS5_PAYLOAD_SDK}/include")
+endif()
+if(EXISTS "${PS5_PAYLOAD_SDK}")
+  include_directories(SYSTEM "${PS5_PAYLOAD_SDK}")
+endif()
 
 # Cheats-only build graph.
 # Required order: NidResolver -> hijacker -> shellui/daemon.
