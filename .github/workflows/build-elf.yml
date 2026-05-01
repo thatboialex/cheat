@@ -22,11 +22,12 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build clang llvm file build-essential git ca-certificates
 
-      - name: Resolve PS5 payload SDK path
+      - name: Clone PS5 payload SDK
         run: |
           set -euo pipefail
           SDK_DIR="$GITHUB_WORKSPACE/external/ps5-payload-sdk"
@@ -35,6 +36,33 @@ jobs:
           git clone --depth 1 --recurse-submodules https://github.com/ps5-payload-dev/sdk "$SDK_DIR"
           echo "PS5_PAYLOAD_SDK=$SDK_DIR" >> "$GITHUB_ENV"
 
+      - name: Diagnose build and SDK layout
+        run: |
+          set -euo pipefail
+          REPO_ROOT="$GITHUB_WORKSPACE"
+          SOURCE_DIR="$REPO_ROOT/Source Code"
+          BUILD_DIR="$REPO_ROOT/build/ps5-release"
+          SDK_DIR="$PS5_PAYLOAD_SDK"
+
+          echo "pwd=$(pwd)"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "REPO_ROOT=$REPO_ROOT"
+          echo "SOURCE_DIR=$SOURCE_DIR"
+          echo "BUILD_DIR=$BUILD_DIR"
+          echo "PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK"
+
+          test -d "$SOURCE_DIR"
+          test -d "$SDK_DIR"
+
+          echo "=== Repo build-related files ==="
+          find "$REPO_ROOT" -maxdepth 4 -type f | sort | sed "s#^$REPO_ROOT/##" | grep -E '(^|/)(CMakeLists.txt|CMakePresets.json|Makefile|.*\.cmake|.*\.sh|linker\.x|\.github/workflows/.*\.yml)$' || true
+
+          echo "=== SDK root listing (maxdepth 3, first 200 files) ==="
+          find "$SDK_DIR" -maxdepth 3 -type f | sort | head -200
+
+          echo "=== SDK build-helper files ==="
+          find "$SDK_DIR" -maxdepth 6 -type f \( -name "*toolchain*.cmake" -o -name "*.cmake" -o -name "Makefile" -o -name "*.sh" \) -print | sort
+
       - name: Configure and build ELF
         run: |
           set -euo pipefail
@@ -42,31 +70,39 @@ jobs:
           SOURCE_DIR="$REPO_ROOT/Source Code"
           BUILD_DIR="$REPO_ROOT/build/ps5-release"
           SDK_DIR="$PS5_PAYLOAD_SDK"
-          TOOLCHAIN_FILE="$SDK_DIR/cmake/toolchain-ps5.cmake"
 
-          pwd
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          echo "PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK"
-          echo "SOURCE_DIR=$SOURCE_DIR"
-          echo "BUILD_DIR=$BUILD_DIR"
-          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE"
-          ls -la "$SOURCE_DIR"
-          ls -la "$(dirname "$TOOLCHAIN_FILE")"
+          test -d "$SOURCE_DIR" || { echo "Missing source dir: $SOURCE_DIR" >&2; exit 1; }
+          test -d "$SDK_DIR" || { echo "Missing SDK dir: $SDK_DIR" >&2; exit 1; }
 
-          test -d "$SOURCE_DIR"
-          test -d "$SDK_DIR"
-          test -f "$TOOLCHAIN_FILE" || {
-            echo "Missing toolchain file: $TOOLCHAIN_FILE" >&2
-            find "$GITHUB_WORKSPACE" -name "toolchain-ps5.cmake" -print
+          REPO_TOOLCHAIN="$SOURCE_DIR/stubber/toolchain.cmake"
+          SDK_TOOLCHAIN=""
+          if [ -d "$SDK_DIR" ]; then
+            SDK_TOOLCHAIN="$(find "$SDK_DIR" -maxdepth 8 -type f -name 'toolchain-ps5.cmake' | head -n1 || true)"
+          fi
+
+          CONFIGURE_CMD=""
+          if [ -n "$SDK_TOOLCHAIN" ] && [ -f "$SDK_TOOLCHAIN" ]; then
+            echo "Using SDK toolchain file: $SDK_TOOLCHAIN"
+            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$SDK_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+          elif [ -x "$SDK_DIR/bin/prospero-cmake" ]; then
+            echo "Using SDK wrapper: $SDK_DIR/bin/prospero-cmake"
+            CONFIGURE_CMD="\"$SDK_DIR/bin/prospero-cmake\" -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release"
+          elif [ -f "$REPO_TOOLCHAIN" ]; then
+            echo "Using repository toolchain file: $REPO_TOOLCHAIN"
+            CONFIGURE_CMD="cmake -S \"$SOURCE_DIR\" -B \"$BUILD_DIR\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"$REPO_TOOLCHAIN\" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+          else
+            echo "ERROR: no valid PS5 configure path found." >&2
+            echo "pwd=$(pwd)" >&2
+            echo "PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK" >&2
+            echo "Repo cmake files:" >&2
+            find "$REPO_ROOT" -maxdepth 5 -type f \( -name "*.cmake" -o -name "CMakeLists.txt" -o -name "CMakePresets.json" -o -name "*.sh" \) | sort >&2
+            echo "SDK helper files:" >&2
+            find "$SDK_DIR" -maxdepth 8 -type f \( -name "*toolchain*.cmake" -o -name "*.cmake" -o -name "Makefile" -o -name "*.sh" \) | sort >&2
             exit 1
-          }
+          fi
 
-          cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++
-
+          echo "Configure command: $CONFIGURE_CMD"
+          eval "$CONFIGURE_CMD"
           cmake --build "$BUILD_DIR" --config Release --verbose
 
       - name: Verify ELF outputs
@@ -78,7 +114,8 @@ jobs:
 
           mapfile -t elfs < <(find "$BUILD_DIR" "$SOURCE_DIR" -type f \( -name "*.elf" -o -name "*.ELF" \) | sort)
           if [ ${#elfs[@]} -eq 0 ]; then
-            echo "No ELF files found in $BUILD_DIR or $SOURCE_DIR" >&2
+            echo "No ELF files found after successful build." >&2
+            echo "Searched: $BUILD_DIR and $SOURCE_DIR" >&2
             exit 1
           fi
 
