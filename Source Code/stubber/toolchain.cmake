@@ -35,7 +35,11 @@ set(CMAKE_ASM_FLAGS_INIT "-fno-exceptions")
 set(CMAKE_C_FLAGS_INIT   "-fno-exceptions")
 set(CMAKE_CXX_FLAGS_INIT "-fno-exceptions")
 
-set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=lld -fPIC -nodefaultlibs -T${CMAKE_CURRENT_SOURCE_DIR}/linker.x")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+set(LINKER_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../linker.x")
+set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=lld -fPIC -nodefaultlibs")
+add_link_options("LINKER:-T,${LINKER_SCRIPT}")
 set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=lld -nostdlib")
 add_link_options("LINKER:SHELL:-shared --build-id=none -zmax-page-size=16384 -zcommon-page-size=16384 --hash-style=sysv")
 
