@@ -70,17 +70,24 @@ From a fresh clone:
    export PS5_PAYLOAD_SDK="$PWD/external/ps5-payload-sdk"
       ```
 
-3. Configure (non-Windows host)
+3. Prepare no-space source mirror (matches CI)
+   ```bash
+   SOURCE_DIR="$PWD/ci-src"
+   rsync -a --delete "$PWD/Source Code/" "$SOURCE_DIR/"
+   ```
+
+4. Configure (non-Windows host)
    ```bash
    SDK_TOOLCHAIN="$(find "$PS5_PAYLOAD_SDK" -maxdepth 8 -type f -name "toolchain-ps5.cmake" | head -n1 || true)"
    if [ -n "$SDK_TOOLCHAIN" ]; then
-     cmake -S . -B "$PWD/../build/ps5-release" -G Ninja \
+    cmake -S "$SOURCE_DIR" -B "$PWD/build/ps5-release" -G Ninja \
        -DCMAKE_BUILD_TYPE=Release \
        -DCMAKE_TOOLCHAIN_FILE="$SDK_TOOLCHAIN" \
        -DCMAKE_C_COMPILER=clang \
-       -DCMAKE_CXX_COMPILER=clang++
+       -DCMAKE_CXX_COMPILER=clang++ \
+       -DPS5_PAYLOAD_SDK="$PS5_PAYLOAD_SDK"
    else
-     "$PS5_PAYLOAD_SDK/bin/prospero-cmake" -S . -B "$PWD/../build/ps5-release" -G Ninja -DCMAKE_BUILD_TYPE=Release
+    "$PS5_PAYLOAD_SDK/bin/prospero-cmake" -S "$SOURCE_DIR" -B "$PWD/build/ps5-release" -G Ninja -DCMAKE_BUILD_TYPE=Release -DPS5_PAYLOAD_SDK="$PS5_PAYLOAD_SDK"
    fi
    ```
    On Windows, use:
@@ -88,7 +95,7 @@ From a fresh clone:
    cmake --preset ps5-base
    ```
 
-4. Clean build directory (recommended for reproducibility)
+5. Clean build directory (recommended for reproducibility)
    ```bash
    cmake --build "$PWD/../build/ps5-release" --config Release --verbose
    ```
@@ -98,17 +105,18 @@ From a fresh clone:
    cmake --build "$PWD/../build/ps5-release" --config Release --verbose
    ```
 
-6. Expected ELF output
+7. Expected ELF output
    - Primary payload output:
      - `Source Code/bin/daemon.elf`
 
-7. Verify ELF exists
+8. Verify ELF exists
    ```bash
    test -f bin/daemon.elf && echo "daemon.elf built"
    ```
 
 ### Troubleshooting
 - **Configure fails with missing toolchain or wrapper**: verify `PS5_PAYLOAD_SDK` points to the SDK root and that either `bin/prospero-cmake` or a `toolchain-ps5.cmake` file exists in that SDK tree.
+- **`include_directories given empty-string as include directory`**: this means `PS5_PAYLOAD_SDK` was not populated into CMake. Pass `-DPS5_PAYLOAD_SDK=...` and/or export `PS5_PAYLOAD_SDK` before configure.
 - **Missing SDK headers/libraries at compile/link time**: verify `PS5_PAYLOAD_SDK` and local SDK library layout expected by `Source Code/lib/`.
 - **Preset mismatch on host OS**: ensure `TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/cmake/toolchain-ps5.cmake"` points to a real file.
 
@@ -164,7 +172,7 @@ The repository includes a CI workflow at `.github/workflows/build-elf.yml` that 
 4. Exports `PS5_PAYLOAD_SDK` through `$GITHUB_ENV`.
 5. Prints SDK/repo diagnostics and auto-detects one of: SDK `toolchain-ps5.cmake`, SDK `bin/prospero-cmake`, or repository fallback toolchain file.
 6. Copies `Source Code/` into a no-space CI worktree at `ci-src/` before configuring to avoid linker-script path splitting on `-T.../linker.x`.
-7. Builds with `cmake --build "$BUILD_DIR" --config Release --verbose`.
+7. Configures with explicit `-DPS5_PAYLOAD_SDK="$GITHUB_WORKSPACE/external/ps5-payload-sdk"` and builds with `cmake --build "$BUILD_DIR" --config Release --verbose`.
 8. Verifies ELF output exists and prints `ls -lh`, `file`, and `sha256sum` output.
 9. Uploads ELF artifacts as `cheat-toolbox-elf`.
 
